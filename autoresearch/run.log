@@ -1,0 +1,7 @@
+Running benchmark for 180s...
+---
+total_generations:  20274
+total_walltime:     180
+generations_per_s:  112.63
+PASS  20274 generations in 180.01s
+      112.63 generations/sec

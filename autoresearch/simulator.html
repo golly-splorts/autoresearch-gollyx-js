@@ -1,0 +1,289 @@
+{% extends 'base.html' %}
+{% block content %}
+
+
+<div class="container" id="container-golly-header">
+  <div class="row">
+    <h1 class="golly-simulator-header" style="color: #eee;"><span id="golly-game-title">Hellmouth VII</span></h1>
+  </div>
+</div>
+
+
+<div class="container invisible" id="container-golly-controls">
+
+
+  <!--
+      SCOREBOARD PANELS ROW
+  -->
+
+  <div class="row">
+  
+      <div class="col-sm-8" id="scoreboard-panels-container">
+  
+          <div class="card bg-primary mb-3">
+              <h4 class="card-header text-white">Scoreboard</h4>
+              <ul class="list-group list-group-flush">
+                <li class="list-group-item scoreboard-panel scoreboard-panel-no-padding"> 
+                  <table class="scoreboard-panel-table" id="scoreboard-panel-table-the">
+                    <thead>
+                      <th class="scoreboard-table-column-wl scoreboard-table-column-rank"></th>
+                      <th class="scoreboard-table-column-icon"></th>
+                      <th class="scoreboard-table-column-name"></th>
+                      <th class="scoreboard-table-column-score" align="right">Score</th>
+                      <th class="scoreboard-table-column-spacing"></th>
+                      <th class="scoreboard-table-column-record" align="right">Record</th>
+                    </thead>
+                    <!-- team1 -->
+                    <tr class="scoreboard-table-first-row">
+                      <td class="scoreboard-table-column-wl scoreboard-table-column-rank">
+                        <!-- width is 0px, set to 35px in JS when rank is shown -->
+                        <span class="badge bg-success badge-success" id="team1winner"></span>
+                        <span class="badge bg-danger badge-danger" id="team1loser"></span>
+                      </td>
+                      <td class="scoreboard-table-column-icon">
+                        <!-- width is 35px -->
+                        <span class="icon-container team-icon-container" id="team1-icon-container"></span>
+                      </td>
+                      <td class="scoreboard-table-column-name">
+                        <span class="team1color team1name"></span>
+                      </td>
+                      <td align="right" class="scoreboard-table-column-score">
+                        <!-- width is 45px -->
+                        <b>
+                        <span class="team1color" id="livecells1"></span>
+                        </b>
+                      </td>
+                      <td align="right" class="scoreboard-table-column-spacing">
+                          <p>&nbsp;</p>
+                      </td>
+                      <td align="right" class="scoreboard-table-column-record">
+                        <!-- width is 45px -->
+                        <span class="team1color simulator-record" id="team1record"></span>
+                      </td>
+                    </tr>
+
+
+                    <!-- team2 -->
+                    <tr class="scoreboard-table-last-row">
+                      <td class="scoreboard-table-column-wl scoreboard-table-column-rank">
+                        <!-- width is 0px, set to 35px in JS when rank is shown -->
+                        <span class="badge bg-success badge-success" id="team2winner"></span>
+                        <span class="badge bg-danger badge-danger" id="team2loser"></span>
+                      </td>
+                      <td class="scoreboard-table-column-icon">
+                        <!-- width is 35px -->
+                        <span class="icon-container team-icon-container" id="team2-icon-container"></span>
+                      </td>
+                      <td class="scoreboard-table-column-name">
+                        <span class="team2color team2name"></span>
+                      </td>
+                      <td align="right" class="scoreboard-table-column-score">
+                        <!-- width is 45px -->
+                        <b>
+                        <span class="team2color" id="livecells2"></span>
+                        </b>
+                      </td>
+                      <td align="right" class="scoreboard-table-column-spacing">
+                          <p>&nbsp;</p>
+                      </td>
+                      <td align="right" class="scoreboard-table-column-record">
+                        <!-- width is 45px -->
+                        <span class="team2color simulator-record" id="team2record"></span>
+                      </td>
+                    </tr>
+
+                  </table>
+                </li>
+              </ul>
+          </div>
+  
+      </div>
+  
+      <div class="col-sm-4" id="stats-panels-container">
+          <div class="card bg-primary mb-3">
+              <h4 class="card-header text-white">Stats</h4>
+              <ul class="list-group list-group-flush">
+
+                  <!--
+                  <li class="list-group-item stats-panel" id="stats-panel-livepct"> 
+                      <table width="100%"><tr><td>
+                        Live %:
+                      </td><td align="right">
+                        <span id="livePct"></span>
+                      </td></tr></table>
+                  </li>
+                  -->
+  
+                  <li class="list-group-item stats-panel" id="stats-panel-livecells">
+                      <table width="100%"><tr><td>
+                        Live Cells:
+                      </td><td align="right">
+                        <span id="livecells"></span>
+                      </td></tr></table>
+                  </li>
+
+                  <li class="list-group-item stats-panel" id="stats-panel-generation">
+                      <table width="100%"><tr><td>
+                        Generation:
+                      </td><td align="right">
+                        <span id="generation"></span>
+                      </td></tr></table>
+                  </li>
+  
+                  <li class="list-group-item stats-panel" id="stats-panel-map">
+                      <table width="100%"><tr><td>
+                        Map:
+                      </td><td align="right">
+                        <span class="badge bg-secondary badge-secondary" id="mapname-label"></span>
+                      </td></tr></table>
+                  </li>
+  
+              </ul>
+          </div>
+      </div>
+
+  </div>
+
+
+  <!--
+      CONTROLS ROW
+  -->
+
+  <div class="row">
+
+    <div class="col-sm-8 mb-3">
+      <ul class="list-group list-group-flush">
+        <li class="list-group-item list-group-item-add-border">
+          <div class="box controls">
+            <form action="">
+              <div class="btn-group" role="group" aria-label="Basic example">
+                <button type="button" id="buttonRun"   class="btn btn-md btn-success btn-secondary"><u>R</u>un</button>
+                <button type="button" id="buttonStep"  class="btn btn-md btn-default btn-secondary"><u>S</u>tep</button>
+                <button type="button" id="buttonClear" class="btn btn-md btn-default btn-secondary"><u>C</u>lear</button>
+              </div>
+              <span class="hspace" style="padding-left: 20px; padding-right: 20px;"></span>
+              <div class="btn-group" role="group" aria-label="Basic example">
+                <button type="button" id="buttonGrid"   class="btn btn-md btn-default btn-secondary"><u>G</u>rid</button>
+                <button type="button" id="buttonTrail"  class="btn btn-md btn-default btn-secondary">Trail</button>
+                <button type="button" id="buttonColors" class="btn btn-md btn-default btn-secondary">Colors</button>
+              </div>
+            </form>
+          </div>
+        </li>
+      </ul>
+    </div>
+
+    <div class="col-sm-4">
+      <ul class="list-group list-group-flush">
+        <li class="list-group-item list-group-item-add-border">
+          <div class="box controls">
+            <div class="slidecontainer">
+              <form>
+                <div class="form-group my-form-group">
+                  <label for="formControlRange" class="float-left"><u>F</u>aster</label>
+                  <label for="formControlRange" class="float-right">Slower</label>
+                  <input type="range" class="form-control-range" id="speed-slider" min="1" max="4" step="1" value="2">
+                </div>
+              </form>
+            </div>
+          </div>
+        </li>
+      </ul>
+    </div>
+
+  </div>
+
+</div>
+
+<div class="container invisible" id="container-canvas">
+
+  <div class="row">
+    <div class="col-sm-12">
+      <table border="0" class="grid-holder">
+        <tr>
+          <td colspan="2">
+            <canvas id="canvas" width="900" height="450">
+            </canvas>
+          </td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+</div>
+
+
+<div class="container" id="container-golly-frontmatter">
+
+  <div class="row">
+
+    <p>&nbsp;</p>
+
+    <p>&nbsp;</p>
+
+    <p>To start the simulator, click the <span class="badge bg-success badge-success">Run</span> button. Click again to pause it.
+    The <span class="badge bg-secondary badge-secondary">Step</span> button will advance the simulator by a single step
+    when it is paused. Refresh the window to reset the simulator.
+    </p>
+
+    <p>You can also control the appearance of the simulator.
+    Use the <span class="badge bg-secondary badge-secondary">Colors</span> button to cycle through different
+    color schemes for the two teams. Use the <span class="badge bg-secondary badge-secondary">Grid</span> button
+    to turn the grid on and off.
+    </p>
+
+    <p>This simulator is a two-color version of Conway's Game of Life.
+    </p>
+
+  </div>
+
+</div>
+
+
+<div class="container invisible" id="container-loading">
+
+    <div class="row text-center notify-header">
+      <div class="col-md-12">
+        <h4 class="text-success">The site is currently loading...</h4>
+      </div>
+    </div>
+
+</div>
+
+
+<div class="container invisible" id="container-error">
+
+    <div class="row text-center notify-header">
+      <div class="col-md-12">
+        <h2 class="text-danger">The site has experienced a technical glitch.</h2>
+      </div>
+    </div>
+
+    <div class="row text-center notify-body">
+      <div class="col-md-12">
+        <p>
+        Ninjas have been dispatched to track down those responsible for the downtime
+        and bring them back to Hellmouth Community College to fix the site.
+        </p>
+      </div>
+    </div>
+
+</div>
+
+<noscript>
+  <div class="container" id="container-noscript">
+    <div class="row text-center landing-header">
+      <div class="col-md-12">
+        <h2 class="text-danger">You must have Javascript enabled to view this site.</h2>
+      </div>
+    </div>
+  </div>
+</noscript>
+
+{% endblock %}
+{% block javascript %}
+<script src="{{ SITEURL }}/theme/js/json-sans-eval.js"></script>
+<script src="vii.js"></script>
+{% endblock %}
