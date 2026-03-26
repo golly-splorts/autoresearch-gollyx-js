@@ -1,8 +1,8 @@
 /**
  * program.js - Self-contained two-color toroidal Game of Life simulator.
  *
- * Hybrid dense grid + live cell list. Pre-allocated buffers, ring buffer
- * for moving avg, reused result object, fill(0) instead of dirty tracking.
+ * Hybrid dense grid + live cell list. Packed neighbor counts (total + team1
+ * in single Uint32Array), generation-stamped checked array (no clearing needed).
  */
 
 const EQUALTOL = 1e-8;
@@ -35,12 +35,13 @@ function ToroidalGOL(s1, s2, rows, columns) {
   this.color = this.colorA;
   this.useA = true;
 
-  // Pre-allocated work buffers
-  this.neighborCount = new Int32Array(size);
-  this.neighbor1Count = new Int32Array(size);
-  this.checked = new Uint8Array(size);
+  // Packed neighbor counts: low 16 bits = total, high 16 bits = team1
+  this.packedNeighbors = new Uint32Array(size);
+  // Generation stamp for checked array (no clearing needed)
+  this.checkedStamp = new Uint32Array(size);
+  this.currentStamp = 1;
 
-  // Live cell lists (pre-allocate)
+  // Live cell lists
   this.liveCells = new Int32Array(size);
   this.liveCount = 0;
   this.newLiveCells = new Int32Array(size);
@@ -173,11 +174,12 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
   var rowDown = this.rowDown;
   var colLeft = this.colLeft;
   var colRight = this.colRight;
-  var neighborCount = this.neighborCount;
-  var neighbor1Count = this.neighbor1Count;
-  var checked = this.checked;
+  var packed = this.packedNeighbors;
+  var checkedStamp = this.checkedStamp;
+  var stamp = this.currentStamp;
 
-  // Phase 1: Accumulate neighbor counts
+  // Phase 1: Accumulate packed neighbor counts
+  // Low 16 bits = total count, high 16 bits = team1 count
   for (var li = 0; li < numLive; li++) {
     var idx = liveCells[li];
     var y = (idx / cols) | 0;
@@ -188,25 +190,17 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
     var xm1 = colLeft[x];
     var xp1 = colRight[x];
 
-    neighborCount[ym1Off + xm1]++;
-    neighborCount[ym1Off + x]++;
-    neighborCount[ym1Off + xp1]++;
-    neighborCount[yOff + xm1]++;
-    neighborCount[yOff + xp1]++;
-    neighborCount[yp1Off + xm1]++;
-    neighborCount[yp1Off + x]++;
-    neighborCount[yp1Off + xp1]++;
+    // increment = 1 (total) + 0x10000 (team1) if color is 1
+    var inc = color[idx] === 1 ? 0x10001 : 1;
 
-    if (color[idx] === 1) {
-      neighbor1Count[ym1Off + xm1]++;
-      neighbor1Count[ym1Off + x]++;
-      neighbor1Count[ym1Off + xp1]++;
-      neighbor1Count[yOff + xm1]++;
-      neighbor1Count[yOff + xp1]++;
-      neighbor1Count[yp1Off + xm1]++;
-      neighbor1Count[yp1Off + x]++;
-      neighbor1Count[yp1Off + xp1]++;
-    }
+    packed[ym1Off + xm1] += inc;
+    packed[ym1Off + x] += inc;
+    packed[ym1Off + xp1] += inc;
+    packed[yOff + xm1] += inc;
+    packed[yOff + xp1] += inc;
+    packed[yp1Off + xm1] += inc;
+    packed[yp1Off + x] += inc;
+    packed[yp1Off + xp1] += inc;
   }
 
   // Phase 2: Determine new state
@@ -216,10 +210,11 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
 
   for (var li = 0; li < numLive; li++) {
     var idx = liveCells[li];
-    var n = neighborCount[idx];
+    var p = packed[idx];
+    var n = p & 0xFFFF;
 
     if (n === 2 || n === 3) {
-      var n1 = neighbor1Count[idx];
+      var n1 = p >>> 16;
       var n2 = n - n1;
       if (n1 > n2) {
         newColor[idx] = 1;
@@ -241,13 +236,14 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
     var xm1 = colLeft[x];
     var xp1 = colRight[x];
 
-    var nIdx;
+    var nIdx, np, nn, nn1;
 
     nIdx = ym1Off + xm1;
-    if (color[nIdx] === 0 && !checked[nIdx]) {
-      checked[nIdx] = 1;
-      if (neighborCount[nIdx] === 3) {
-        var nn1 = neighbor1Count[nIdx];
+    if (color[nIdx] === 0 && checkedStamp[nIdx] !== stamp) {
+      checkedStamp[nIdx] = stamp;
+      np = packed[nIdx]; nn = np & 0xFFFF;
+      if (nn === 3) {
+        nn1 = np >>> 16;
         if (nn1 > 1) { newColor[nIdx] = 1; }
         else if (nn1 < 2) { newColor[nIdx] = 2; }
         else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
@@ -256,10 +252,11 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
     }
 
     nIdx = ym1Off + x;
-    if (color[nIdx] === 0 && !checked[nIdx]) {
-      checked[nIdx] = 1;
-      if (neighborCount[nIdx] === 3) {
-        var nn1 = neighbor1Count[nIdx];
+    if (color[nIdx] === 0 && checkedStamp[nIdx] !== stamp) {
+      checkedStamp[nIdx] = stamp;
+      np = packed[nIdx]; nn = np & 0xFFFF;
+      if (nn === 3) {
+        nn1 = np >>> 16;
         if (nn1 > 1) { newColor[nIdx] = 1; }
         else if (nn1 < 2) { newColor[nIdx] = 2; }
         else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
@@ -268,10 +265,11 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
     }
 
     nIdx = ym1Off + xp1;
-    if (color[nIdx] === 0 && !checked[nIdx]) {
-      checked[nIdx] = 1;
-      if (neighborCount[nIdx] === 3) {
-        var nn1 = neighbor1Count[nIdx];
+    if (color[nIdx] === 0 && checkedStamp[nIdx] !== stamp) {
+      checkedStamp[nIdx] = stamp;
+      np = packed[nIdx]; nn = np & 0xFFFF;
+      if (nn === 3) {
+        nn1 = np >>> 16;
         if (nn1 > 1) { newColor[nIdx] = 1; }
         else if (nn1 < 2) { newColor[nIdx] = 2; }
         else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
@@ -280,10 +278,11 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
     }
 
     nIdx = yOff + xm1;
-    if (color[nIdx] === 0 && !checked[nIdx]) {
-      checked[nIdx] = 1;
-      if (neighborCount[nIdx] === 3) {
-        var nn1 = neighbor1Count[nIdx];
+    if (color[nIdx] === 0 && checkedStamp[nIdx] !== stamp) {
+      checkedStamp[nIdx] = stamp;
+      np = packed[nIdx]; nn = np & 0xFFFF;
+      if (nn === 3) {
+        nn1 = np >>> 16;
         if (nn1 > 1) { newColor[nIdx] = 1; }
         else if (nn1 < 2) { newColor[nIdx] = 2; }
         else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
@@ -292,10 +291,11 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
     }
 
     nIdx = yOff + xp1;
-    if (color[nIdx] === 0 && !checked[nIdx]) {
-      checked[nIdx] = 1;
-      if (neighborCount[nIdx] === 3) {
-        var nn1 = neighbor1Count[nIdx];
+    if (color[nIdx] === 0 && checkedStamp[nIdx] !== stamp) {
+      checkedStamp[nIdx] = stamp;
+      np = packed[nIdx]; nn = np & 0xFFFF;
+      if (nn === 3) {
+        nn1 = np >>> 16;
         if (nn1 > 1) { newColor[nIdx] = 1; }
         else if (nn1 < 2) { newColor[nIdx] = 2; }
         else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
@@ -304,10 +304,11 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
     }
 
     nIdx = yp1Off + xm1;
-    if (color[nIdx] === 0 && !checked[nIdx]) {
-      checked[nIdx] = 1;
-      if (neighborCount[nIdx] === 3) {
-        var nn1 = neighbor1Count[nIdx];
+    if (color[nIdx] === 0 && checkedStamp[nIdx] !== stamp) {
+      checkedStamp[nIdx] = stamp;
+      np = packed[nIdx]; nn = np & 0xFFFF;
+      if (nn === 3) {
+        nn1 = np >>> 16;
         if (nn1 > 1) { newColor[nIdx] = 1; }
         else if (nn1 < 2) { newColor[nIdx] = 2; }
         else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
@@ -316,10 +317,11 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
     }
 
     nIdx = yp1Off + x;
-    if (color[nIdx] === 0 && !checked[nIdx]) {
-      checked[nIdx] = 1;
-      if (neighborCount[nIdx] === 3) {
-        var nn1 = neighbor1Count[nIdx];
+    if (color[nIdx] === 0 && checkedStamp[nIdx] !== stamp) {
+      checkedStamp[nIdx] = stamp;
+      np = packed[nIdx]; nn = np & 0xFFFF;
+      if (nn === 3) {
+        nn1 = np >>> 16;
         if (nn1 > 1) { newColor[nIdx] = 1; }
         else if (nn1 < 2) { newColor[nIdx] = 2; }
         else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
@@ -328,10 +330,11 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
     }
 
     nIdx = yp1Off + xp1;
-    if (color[nIdx] === 0 && !checked[nIdx]) {
-      checked[nIdx] = 1;
-      if (neighborCount[nIdx] === 3) {
-        var nn1 = neighbor1Count[nIdx];
+    if (color[nIdx] === 0 && checkedStamp[nIdx] !== stamp) {
+      checkedStamp[nIdx] = stamp;
+      np = packed[nIdx]; nn = np & 0xFFFF;
+      if (nn === 3) {
+        nn1 = np >>> 16;
         if (nn1 > 1) { newColor[nIdx] = 1; }
         else if (nn1 < 2) { newColor[nIdx] = 2; }
         else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
@@ -340,14 +343,12 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
     }
   }
 
-  // Phase 3: Clear buffers using fill(0) — fast memset for typed arrays
-  neighborCount.fill(0);
-  neighbor1Count.fill(0);
-  checked.fill(0);
-  // Clear old color
+  // Phase 3: Clear only packed neighbors (one array instead of three) + old color
+  packed.fill(0);
   for (var li = 0; li < numLive; li++) {
     color[liveCells[li]] = 0;
   }
+  this.currentStamp = stamp + 1;
 
   this.color = newColor;
   this.useA = !this.useA;
@@ -422,7 +423,6 @@ function runBenchmark(s1, s2, rows, columns, timeLimitS, checkpointCallback) {
   var deadlineMs = timeLimitS * 1000;
   var gen = 0;
 
-  // Phase 1: Run through checkpoint generations
   var checkpointGens = [1, 2, 3, 4, 5, 60, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 2000, 3000, 5000];
   for (var ci = 0; ci < checkpointGens.length; ci++) {
     var target = checkpointGens[ci];
@@ -436,7 +436,6 @@ function runBenchmark(s1, s2, rows, columns, timeLimitS, checkpointCallback) {
     if ((perf.now() - start) >= deadlineMs) break;
   }
 
-  // Phase 2: No more checkpoints — batch generations
   if (gen >= 5000 && (perf.now() - start) < deadlineMs) {
     while (true) {
       for (var b = 0; b < 128; b++) {
