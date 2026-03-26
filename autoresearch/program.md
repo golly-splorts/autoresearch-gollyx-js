@@ -1,4 +1,4 @@
-# Autoresearch: Optimizing ToroidalGOL
+# Autoresearch: Optimizing ToroidalGOL (JavaScript)
 
 You are an autonomous research agent optimizing a two-color competitive
 cellular automata simulator on a toroidal grid. Your goal is to maximize the
@@ -12,18 +12,12 @@ To set up a new experiment, work with the user to:
 1. **Agree on a run tag**: propose a tag based on today's date (e.g. `mar5`). The branch `autoresearch/<tag>` must not already exist — this is a fresh run.
 2. **Create the branch**: `git checkout -b autoresearch/<tag>` from current master.
 3. **Read the in-scope files**: The repo is small. Read these files for full context:
-   - `bench.py` — benchmark harness with hardcoded test case, correctness checkpoints, and evaluation. Do not modify.
-   - `program.py` — the file you modify. Contains a toroidal cellular automata class and a run_benchmark entry point.
+   - `bench.js` — benchmark harness with hardcoded test case, correctness checkpoints, and evaluation. Do not modify.
+   - `program.js` — the file you modify. Contains a toroidal cellular automata class and a runBenchmark entry point.
 4. **Initialize results.tsv**: Create `results.tsv` with just the header row. The baseline will be recorded after the first run.
 5. **Confirm and go**: Confirm setup looks good.
 
 Once you get confirmation, kick off the experimentation.
-
-## Using Pypy
-
-Utilize the python binary at `vpp/bin/python` to run the benchmarking step.
-
-Ensure scipy and numpy are installed, if not, stop and ask the human to install scipy and numpy.
 
 ## Experimentation
 
@@ -35,24 +29,28 @@ for a fixed time budget of 3 minutes.
 - **Metric:** `generations_per_s` (higher is better) is the number of generations per second
   that the simulator sustained over the 3 minute running duration.
 - **Hard constraint:** All checkpoint cell counts (team1, team2) must
-  exactly match the hardcoded checkpoints in bench.py. Any divergence = FAIL,
+  exactly match the hardcoded checkpoints in bench.js. Any divergence = FAIL,
   the change is rejected.
 
 ### Experiment rules
 
 **What you CAN do:**
-- Modify `program.py` - this is the only file you may edit. You may change:
-    - Data structures (the sparse row-list representation, dicts, sets, numpy arrays, etc.)
+- Modify `program.js` - this is the only file you may edit. You may change:
+    - Data structures (the sparse row-list representation, Maps, Sets, typed arrays, etc.)
     - Algorithms (neighbor counting, dead-neighbor collection, birth/survival logic)
     - Toroidal wrapping strategy
     - Memory layout and access patterns
-    - Use of numpy or other pure-Python optimizations
+    - Typed arrays (`Uint8Array`, `Int32Array`) for dense grid representations
+    - Integer key packing (`y * columns + x`) instead of string `"x,y"`
+    - `Map` instead of plain object for dead neighbors
+    - Precomputed neighbor offset tables
+    - Flat array convolution-style neighbor counting
     - Caching, precomputation, lookup tables
 
 **What you CANNOT do:**
-- Do not modify `bench.py`. It is read-only. It contains the hardcoded test case, correctness checkpoints, and evaluation harness.
-- Do not install new packages or add dependencies. You can only use what's already in `pyproject.toml`.
-- Do not modify the `run_benchmark()` function signature or return format
+- Do not modify `bench.js`. It is read-only. It contains the hardcoded test case, correctness checkpoints, and evaluation harness.
+- Do not install new packages or add dependencies. Only use Node.js built-in modules.
+- Do not modify the `runBenchmark()` function signature or return format
 - Do not modify the cellular automata rules (B3/S23, Game of Life)
 - Do not modify the toroidal boundary conditions or grid initial conditions
 - Do not modify the two-color team assignments (majority rule, checkerboard tiebreak)
@@ -98,11 +96,11 @@ The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autorese
 LOOP FOREVER:
 
 1. Look at the git state: the current branch/commit we're on
-2. Tune `program.py` with an experimental idea by directly hacking the code.
+2. Tune `program.js` with an experimental idea by directly hacking the code.
 3. git commit
-4. Run the experiment/benchmark: `vpp/bin/python bench.py > run.log 2>&1` (redirect everything, do NOT use tee or let output flood your context)
+4. Run the experiment/benchmark: `node bench.js > run.log 2>&1` (redirect everything, do NOT use tee or let output flood your context)
 5. Read out the results: `grep "^generations_per_s:" run.log`
-6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
+6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
 7. Record the results in the tsv (NOTE: do not commit the results.tsv file, leave it untracked by git)
 8. If `generations_per_s` improved (higher), you "advance" the branch, keeping the git commit
 9. If `generations_per_s` did not improve (equal or lower), you git reset back to where you started
@@ -141,26 +139,27 @@ The current implementation has several performance characteristics worth
 investigating:
 
 1. **Sparse row-list representation** — State is stored as `[[y, x1, x2, ...], ...]`.
-   Every `add_cell` call does a linear scan. A dict-of-sets or 2D numpy array
+   Every `addCell` call does a linear scan. A dict-of-sets or typed array
    could be faster for lookup-heavy operations.
 
-2. **Neighbor counting** — `get_neighbors_from_alive` and `get_color_from_alive`
+2. **Neighbor counting** — `getNeighborsFromAlive` and `getColorFromAlive`
    do linear scans through the state lists to find adjacent rows. With a
-   dict-based structure, neighbor lookups become O(1).
+   Map-based structure, neighbor lookups become O(1).
 
 3. **String key construction** — Dead neighbors are tracked via string keys
-   like `"x,y"`. Tuple keys `(x, y)` avoid string allocation and parsing.
+   like `"x,y"`. Integer key packing (`y * columns + x`) avoids string
+   allocation and parsing.
 
 4. **Redundant toroidal wrapping** — Modulo arithmetic is applied repeatedly
    in many methods. Precomputing wrapped coordinates or using a dense grid
    eliminates this overhead.
 
-5. **get_cell_color linear scan** — Called once per neighbor per live cell.
-   With a color lookup dict or array, this becomes O(1).
+5. **getCellColor linear scan** — Called once per neighbor per live cell.
+   With a color lookup Map or typed array, this becomes O(1).
 
-6. **Dense grid approach** — For a 150×240 grid, a pair of numpy arrays
-   (one per team) with convolution-based neighbor counting could be
-   dramatically faster than the sparse approach.
+6. **Dense grid approach** — For a 150×240 grid, a pair of `Uint8Array`s
+   (one per team) with direct neighbor counting could be dramatically
+   faster than the sparse approach.
 
 ### Simplicity criterion
 
@@ -168,4 +167,3 @@ Prefer simple changes with clear wins. A 10-line refactor that gives 2x
 speedup is better than a 200-line rewrite that gives 2.1x. If a complex
 change produces only marginal improvement, discard it and try something
 else.
-
