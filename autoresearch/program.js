@@ -305,17 +305,10 @@ ToroidalGOL.prototype.getLiveCounts = function () {
 };
 
 ToroidalGOL.prototype.nextStep = function () {
-  if (!this.running) {
-    return this.getLiveCounts();
-  } else if (this.foundVictor) {
-    this.running = false;
-    return this.getLiveCounts();
-  } else {
-    this.generation++;
-    var liveCounts = this._nextGenerationLogic();
-    this.updateMovingAvg(liveCounts);
-    return liveCounts;
-  }
+  this.generation++;
+  var liveCounts = this._nextGenerationLogic();
+  this.updateMovingAvg(liveCounts);
+  return liveCounts;
 };
 
 function runBenchmark(s1, s2, rows, columns, timeLimitS, checkpointCallback) {
