@@ -425,12 +425,33 @@ function runBenchmark(s1, s2, rows, columns, timeLimitS, checkpointCallback) {
   var start = perf.now();
   var deadlineMs = timeLimitS * 1000;
   var gen = 0;
-  while ((perf.now() - start) < deadlineMs) {
-    lc = gol.nextStep();
-    gen = gol.generation;
+
+  // Phase 1: Run through checkpoint generations one at a time
+  var checkpointGens = [1, 2, 3, 4, 5, 60, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 2000, 3000, 5000];
+  for (var ci = 0; ci < checkpointGens.length; ci++) {
+    var target = checkpointGens[ci];
+    while (gen < target) {
+      lc = gol.nextStep();
+      gen = gol.generation;
+    }
     if (!checkpointCallback(gen, lc.liveCells1, lc.liveCells2)) {
       break;
     }
+    if ((perf.now() - start) >= deadlineMs) break;
+  }
+
+  // Phase 2: No more checkpoints — batch generations, check time every 128 gens
+  if (gen >= 5000 && (perf.now() - start) < deadlineMs) {
+    while (true) {
+      for (var b = 0; b < 128; b++) {
+        gol.nextStep();
+      }
+      gen = gol.generation;
+      if ((perf.now() - start) >= deadlineMs) break;
+    }
+    // Final callback at last gen
+    lc = gol.getLiveCounts();
+    checkpointCallback(gen, lc.liveCells1, lc.liveCells2);
   }
 
   var elapsedS = (perf.now() - start) / 1000;
