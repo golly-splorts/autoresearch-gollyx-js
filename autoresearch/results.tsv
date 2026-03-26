@@ -1,0 +1,17 @@
+commit	generations_per_s	status	description
+2026-03-26 13:10:21	20274	112.63	180.0011	true	null	
+6d39ed8	112.63	keep	baseline: sparse row-list implementation
+2026-03-26 13:14:21	20274	112.63	180.0024	true	null	
+2026-03-26 13:17:57	20274	112.63	180.0024	true	null	
+384dba5	112.63	discard	dense Uint8Array grid - no improvement, scans all cells
+2026-03-26 13:22:16	20274	112.63	180.0005	true	null	
+2026-03-26 13:26:39	4678991	25994.31	180.0006	true	null	
+a8431f6	25994.39	keep	hybrid dense grid + live cell list + continue past victory
+2026-03-26 13:31:08	7141605	39675.45	180.0006	true	null	
+130e240	39675.57	keep	pre-allocated buffers, double-buffered color, sparse clear
+2026-03-26 13:34:54	7176968	39871.72	180.0015	true	null	
+4c7e6b7	39871.85	keep	batch gens, check time every 128 after checkpoints
+2026-03-26 13:39:28	8017672	44542.02	180.0024	true	null	
+a78babf	44542.15	keep	ring buffer moving avg, reused result object, fill(0) clear
+2026-03-26 13:48:21	9439368	52440.44	180.0017	true	null	
+9b201ff	52440.60	keep	packed neighbor counts, generation-stamped checked array
