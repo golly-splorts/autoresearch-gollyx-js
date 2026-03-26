@@ -1,8 +1,8 @@
 /**
  * program.js - Self-contained two-color toroidal Game of Life simulator.
  *
- * Hybrid: dense Uint8Array grids for O(1) lookup + live cell list for sparse iteration.
- * Pre-allocated buffers, double-buffered color grid, sparse clearing.
+ * Hybrid dense grid + live cell list. Pre-allocated buffers, ring buffer
+ * for moving avg, reused result object, fill(0) instead of dirty tracking.
  */
 
 const EQUALTOL = 1e-8;
@@ -17,12 +17,18 @@ function ToroidalGOL(s1, s2, rows, columns) {
   this.maxdim = 280;
   this.running = true;
   this.generation = 0;
-  this.runningAvgWindow = new Array(this.maxdim).fill(0);
-  this.runningAvgLast3 = [0, 0, 0];
   this.foundVictor = false;
   this.whoWon = 0;
 
+  // Ring buffer for moving average
+  this.ringBuf = new Float64Array(this.maxdim);
+  this.ringIdx = 0;
+  this.ringFull = false;
+  this.ringSum = 0;
+  this.runningAvgLast3 = [0, 0, 0];
+
   var size = rows * columns;
+  this.size = size;
   // Double-buffered color grids (0=dead, 1=team1, 2=team2)
   this.colorA = new Uint8Array(size);
   this.colorB = new Uint8Array(size);
@@ -34,14 +40,17 @@ function ToroidalGOL(s1, s2, rows, columns) {
   this.neighbor1Count = new Int32Array(size);
   this.checked = new Uint8Array(size);
 
-  // Live cell lists (pre-allocate generous capacity)
+  // Live cell lists (pre-allocate)
   this.liveCells = new Int32Array(size);
   this.liveCount = 0;
   this.newLiveCells = new Int32Array(size);
 
-  // Dirty tracking for sparse clear
-  this.dirtyList = new Int32Array(size * 2);
-  this.dirtyCount = 0;
+  // Reusable result object
+  this._liveCountsResult = {
+    generation: 0, liveCells: 0, liveCells1: 0, liveCells2: 0,
+    victoryPct: 0, coverage: 0, territory1: 0, territory2: 0,
+    last3: this.runningAvgLast3,
+  };
 
   // Precompute wrapped coords
   this.rowUp = new Int32Array(rows);
@@ -104,19 +113,28 @@ ToroidalGOL.prototype.updateMovingAvg = function (livecounts) {
   if (this.foundVictor) return;
 
   var maxdim = this.maxdim;
-  if (this.generation < maxdim) {
-    this.runningAvgWindow[this.generation] = livecounts.victoryPct;
-  } else {
-    this.runningAvgWindow.shift();
-    this.runningAvgWindow.push(livecounts.victoryPct);
-    var summ = 0;
-    for (var i = 0; i < this.runningAvgWindow.length; i++) {
-      summ += this.runningAvgWindow[i];
+  var val = livecounts.victoryPct;
+
+  if (!this.ringFull) {
+    this.ringBuf[this.ringIdx] = val;
+    this.ringSum += val;
+    this.ringIdx++;
+    if (this.ringIdx >= maxdim) {
+      this.ringFull = true;
+      this.ringIdx = 0;
     }
-    var runningAvg = summ / this.runningAvgWindow.length;
+  } else {
+    var oldVal = this.ringBuf[this.ringIdx];
+    this.ringBuf[this.ringIdx] = val;
+    this.ringSum += val - oldVal;
+    this.ringIdx = (this.ringIdx + 1) % maxdim;
+
+    var runningAvg = this.ringSum / maxdim;
 
     var removed = this.runningAvgLast3[0];
-    this.runningAvgLast3 = [this.runningAvgLast3[1], this.runningAvgLast3[2], runningAvg];
+    this.runningAvgLast3[0] = this.runningAvgLast3[1];
+    this.runningAvgLast3[1] = this.runningAvgLast3[2];
+    this.runningAvgLast3[2] = runningAvg;
 
     var tol = EQUALTOL;
     if (!this.approxEqual(removed, 0.0, tol)) {
@@ -158,10 +176,8 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
   var neighborCount = this.neighborCount;
   var neighbor1Count = this.neighbor1Count;
   var checked = this.checked;
-  var dirtyList = this.dirtyList;
-  var dirtyCount = 0;
 
-  // Phase 1: Accumulate neighbor counts (only touch cells near live cells)
+  // Phase 1: Accumulate neighbor counts
   for (var li = 0; li < numLive; li++) {
     var idx = liveCells[li];
     var y = (idx / cols) | 0;
@@ -172,43 +188,24 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
     var xm1 = colLeft[x];
     var xp1 = colRight[x];
 
-    var i0 = ym1Off + xm1;
-    var i1 = ym1Off + x;
-    var i2 = ym1Off + xp1;
-    var i3 = yOff + xm1;
-    var i4 = yOff + xp1;
-    var i5 = yp1Off + xm1;
-    var i6 = yp1Off + x;
-    var i7 = yp1Off + xp1;
-
-    // Track dirty cells for sparse clear
-    if (neighborCount[i0] === 0) dirtyList[dirtyCount++] = i0;
-    if (neighborCount[i1] === 0) dirtyList[dirtyCount++] = i1;
-    if (neighborCount[i2] === 0) dirtyList[dirtyCount++] = i2;
-    if (neighborCount[i3] === 0) dirtyList[dirtyCount++] = i3;
-    if (neighborCount[i4] === 0) dirtyList[dirtyCount++] = i4;
-    if (neighborCount[i5] === 0) dirtyList[dirtyCount++] = i5;
-    if (neighborCount[i6] === 0) dirtyList[dirtyCount++] = i6;
-    if (neighborCount[i7] === 0) dirtyList[dirtyCount++] = i7;
-
-    neighborCount[i0]++;
-    neighborCount[i1]++;
-    neighborCount[i2]++;
-    neighborCount[i3]++;
-    neighborCount[i4]++;
-    neighborCount[i5]++;
-    neighborCount[i6]++;
-    neighborCount[i7]++;
+    neighborCount[ym1Off + xm1]++;
+    neighborCount[ym1Off + x]++;
+    neighborCount[ym1Off + xp1]++;
+    neighborCount[yOff + xm1]++;
+    neighborCount[yOff + xp1]++;
+    neighborCount[yp1Off + xm1]++;
+    neighborCount[yp1Off + x]++;
+    neighborCount[yp1Off + xp1]++;
 
     if (color[idx] === 1) {
-      neighbor1Count[i0]++;
-      neighbor1Count[i1]++;
-      neighbor1Count[i2]++;
-      neighbor1Count[i3]++;
-      neighbor1Count[i4]++;
-      neighbor1Count[i5]++;
-      neighbor1Count[i6]++;
-      neighbor1Count[i7]++;
+      neighbor1Count[ym1Off + xm1]++;
+      neighbor1Count[ym1Off + x]++;
+      neighbor1Count[ym1Off + xp1]++;
+      neighbor1Count[yOff + xm1]++;
+      neighbor1Count[yOff + xp1]++;
+      neighbor1Count[yp1Off + xm1]++;
+      neighbor1Count[yp1Off + x]++;
+      neighbor1Count[yp1Off + xp1]++;
     }
   }
 
@@ -217,7 +214,6 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
   var newLiveCells = this.newLiveCells;
   var newCount = 0;
 
-  // Check live cells for survival
   for (var li = 0; li < numLive; li++) {
     var idx = liveCells[li];
     var n = neighborCount[idx];
@@ -237,7 +233,6 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
       newLiveCells[newCount++] = idx;
     }
 
-    // Check dead neighbors for birth
     var y = (idx / cols) | 0;
     var x = idx - y * cols;
     var ym1Off = rowUp[y] * cols;
@@ -249,110 +244,113 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
     var nIdx;
 
     nIdx = ym1Off + xm1;
-    if (color[nIdx] === 0 && !checked[nIdx] && neighborCount[nIdx] === 3) {
+    if (color[nIdx] === 0 && !checked[nIdx]) {
       checked[nIdx] = 1;
-      var nn1 = neighbor1Count[nIdx];
-      if (nn1 > 1) { newColor[nIdx] = 1; }
-      else if (nn1 < 2) { newColor[nIdx] = 2; }
-      else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
-      newLiveCells[newCount++] = nIdx;
-    } else if (color[nIdx] === 0) { checked[nIdx] = 1; }
+      if (neighborCount[nIdx] === 3) {
+        var nn1 = neighbor1Count[nIdx];
+        if (nn1 > 1) { newColor[nIdx] = 1; }
+        else if (nn1 < 2) { newColor[nIdx] = 2; }
+        else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
+        newLiveCells[newCount++] = nIdx;
+      }
+    }
 
     nIdx = ym1Off + x;
-    if (color[nIdx] === 0 && !checked[nIdx] && neighborCount[nIdx] === 3) {
+    if (color[nIdx] === 0 && !checked[nIdx]) {
       checked[nIdx] = 1;
-      var nn1 = neighbor1Count[nIdx];
-      if (nn1 > 1) { newColor[nIdx] = 1; }
-      else if (nn1 < 2) { newColor[nIdx] = 2; }
-      else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
-      newLiveCells[newCount++] = nIdx;
-    } else if (color[nIdx] === 0) { checked[nIdx] = 1; }
+      if (neighborCount[nIdx] === 3) {
+        var nn1 = neighbor1Count[nIdx];
+        if (nn1 > 1) { newColor[nIdx] = 1; }
+        else if (nn1 < 2) { newColor[nIdx] = 2; }
+        else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
+        newLiveCells[newCount++] = nIdx;
+      }
+    }
 
     nIdx = ym1Off + xp1;
-    if (color[nIdx] === 0 && !checked[nIdx] && neighborCount[nIdx] === 3) {
+    if (color[nIdx] === 0 && !checked[nIdx]) {
       checked[nIdx] = 1;
-      var nn1 = neighbor1Count[nIdx];
-      if (nn1 > 1) { newColor[nIdx] = 1; }
-      else if (nn1 < 2) { newColor[nIdx] = 2; }
-      else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
-      newLiveCells[newCount++] = nIdx;
-    } else if (color[nIdx] === 0) { checked[nIdx] = 1; }
+      if (neighborCount[nIdx] === 3) {
+        var nn1 = neighbor1Count[nIdx];
+        if (nn1 > 1) { newColor[nIdx] = 1; }
+        else if (nn1 < 2) { newColor[nIdx] = 2; }
+        else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
+        newLiveCells[newCount++] = nIdx;
+      }
+    }
 
     nIdx = yOff + xm1;
-    if (color[nIdx] === 0 && !checked[nIdx] && neighborCount[nIdx] === 3) {
+    if (color[nIdx] === 0 && !checked[nIdx]) {
       checked[nIdx] = 1;
-      var nn1 = neighbor1Count[nIdx];
-      if (nn1 > 1) { newColor[nIdx] = 1; }
-      else if (nn1 < 2) { newColor[nIdx] = 2; }
-      else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
-      newLiveCells[newCount++] = nIdx;
-    } else if (color[nIdx] === 0) { checked[nIdx] = 1; }
+      if (neighborCount[nIdx] === 3) {
+        var nn1 = neighbor1Count[nIdx];
+        if (nn1 > 1) { newColor[nIdx] = 1; }
+        else if (nn1 < 2) { newColor[nIdx] = 2; }
+        else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
+        newLiveCells[newCount++] = nIdx;
+      }
+    }
 
     nIdx = yOff + xp1;
-    if (color[nIdx] === 0 && !checked[nIdx] && neighborCount[nIdx] === 3) {
+    if (color[nIdx] === 0 && !checked[nIdx]) {
       checked[nIdx] = 1;
-      var nn1 = neighbor1Count[nIdx];
-      if (nn1 > 1) { newColor[nIdx] = 1; }
-      else if (nn1 < 2) { newColor[nIdx] = 2; }
-      else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
-      newLiveCells[newCount++] = nIdx;
-    } else if (color[nIdx] === 0) { checked[nIdx] = 1; }
+      if (neighborCount[nIdx] === 3) {
+        var nn1 = neighbor1Count[nIdx];
+        if (nn1 > 1) { newColor[nIdx] = 1; }
+        else if (nn1 < 2) { newColor[nIdx] = 2; }
+        else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
+        newLiveCells[newCount++] = nIdx;
+      }
+    }
 
     nIdx = yp1Off + xm1;
-    if (color[nIdx] === 0 && !checked[nIdx] && neighborCount[nIdx] === 3) {
+    if (color[nIdx] === 0 && !checked[nIdx]) {
       checked[nIdx] = 1;
-      var nn1 = neighbor1Count[nIdx];
-      if (nn1 > 1) { newColor[nIdx] = 1; }
-      else if (nn1 < 2) { newColor[nIdx] = 2; }
-      else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
-      newLiveCells[newCount++] = nIdx;
-    } else if (color[nIdx] === 0) { checked[nIdx] = 1; }
+      if (neighborCount[nIdx] === 3) {
+        var nn1 = neighbor1Count[nIdx];
+        if (nn1 > 1) { newColor[nIdx] = 1; }
+        else if (nn1 < 2) { newColor[nIdx] = 2; }
+        else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
+        newLiveCells[newCount++] = nIdx;
+      }
+    }
 
     nIdx = yp1Off + x;
-    if (color[nIdx] === 0 && !checked[nIdx] && neighborCount[nIdx] === 3) {
+    if (color[nIdx] === 0 && !checked[nIdx]) {
       checked[nIdx] = 1;
-      var nn1 = neighbor1Count[nIdx];
-      if (nn1 > 1) { newColor[nIdx] = 1; }
-      else if (nn1 < 2) { newColor[nIdx] = 2; }
-      else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
-      newLiveCells[newCount++] = nIdx;
-    } else if (color[nIdx] === 0) { checked[nIdx] = 1; }
+      if (neighborCount[nIdx] === 3) {
+        var nn1 = neighbor1Count[nIdx];
+        if (nn1 > 1) { newColor[nIdx] = 1; }
+        else if (nn1 < 2) { newColor[nIdx] = 2; }
+        else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
+        newLiveCells[newCount++] = nIdx;
+      }
+    }
 
     nIdx = yp1Off + xp1;
-    if (color[nIdx] === 0 && !checked[nIdx] && neighborCount[nIdx] === 3) {
+    if (color[nIdx] === 0 && !checked[nIdx]) {
       checked[nIdx] = 1;
-      var nn1 = neighbor1Count[nIdx];
-      if (nn1 > 1) { newColor[nIdx] = 1; }
-      else if (nn1 < 2) { newColor[nIdx] = 2; }
-      else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
-      newLiveCells[newCount++] = nIdx;
-    } else if (color[nIdx] === 0) { checked[nIdx] = 1; }
+      if (neighborCount[nIdx] === 3) {
+        var nn1 = neighbor1Count[nIdx];
+        if (nn1 > 1) { newColor[nIdx] = 1; }
+        else if (nn1 < 2) { newColor[nIdx] = 2; }
+        else { var ny = (nIdx / cols) | 0; newColor[nIdx] = ((nIdx - ny * cols) % 2 === ny % 2) ? 1 : 2; }
+        newLiveCells[newCount++] = nIdx;
+      }
+    }
   }
 
-  // Phase 3: Sparse clear of work buffers using dirty list
-  for (var di = 0; di < dirtyCount; di++) {
-    var d = dirtyList[di];
-    neighborCount[d] = 0;
-    neighbor1Count[d] = 0;
-    checked[d] = 0;
-  }
-  // Also clear entries for live cells themselves (they may have neighbor counts but weren't in dirty list)
-  for (var li = 0; li < numLive; li++) {
-    var idx = liveCells[li];
-    neighborCount[idx] = 0;
-    neighbor1Count[idx] = 0;
-    checked[idx] = 0;
-  }
-  // Clear old color for cells that were alive
+  // Phase 3: Clear buffers using fill(0) — fast memset for typed arrays
+  neighborCount.fill(0);
+  neighbor1Count.fill(0);
+  checked.fill(0);
+  // Clear old color
   for (var li = 0; li < numLive; li++) {
     color[liveCells[li]] = 0;
   }
 
-  this.dirtyCount = 0;
   this.color = newColor;
   this.useA = !this.useA;
-
-  // Swap live cell buffers
   this.liveCells = newLiveCells;
   this.newLiveCells = liveCells;
   this.liveCount = newCount;
@@ -361,7 +359,6 @@ ToroidalGOL.prototype._nextGenerationLogic = function () {
 };
 
 ToroidalGOL.prototype.getLiveCounts = function () {
-  var rows = this.rows;
   var cols = this.columns;
   var color = this.color;
   var liveCells = this.liveCells;
@@ -388,22 +385,21 @@ ToroidalGOL.prototype.getLiveCounts = function () {
   victory = victory * 100;
   this.victory = victory;
 
-  var totalArea = cols * rows;
+  var totalArea = this.columns * this.rows;
   this.coverage = (livecells / totalArea) * 100;
   this.territory1 = (livecells1 / totalArea) * 100;
   this.territory2 = (livecells2 / totalArea) * 100;
 
-  return {
-    generation: this.generation,
-    liveCells: livecells,
-    liveCells1: livecells1,
-    liveCells2: livecells2,
-    victoryPct: victory,
-    coverage: this.coverage,
-    territory1: this.territory1,
-    territory2: this.territory2,
-    last3: this.runningAvgLast3,
-  };
+  var r = this._liveCountsResult;
+  r.generation = this.generation;
+  r.liveCells = livecells;
+  r.liveCells1 = livecells1;
+  r.liveCells2 = livecells2;
+  r.victoryPct = victory;
+  r.coverage = this.coverage;
+  r.territory1 = this.territory1;
+  r.territory2 = this.territory2;
+  return r;
 };
 
 ToroidalGOL.prototype.nextStep = function () {
@@ -426,7 +422,7 @@ function runBenchmark(s1, s2, rows, columns, timeLimitS, checkpointCallback) {
   var deadlineMs = timeLimitS * 1000;
   var gen = 0;
 
-  // Phase 1: Run through checkpoint generations one at a time
+  // Phase 1: Run through checkpoint generations
   var checkpointGens = [1, 2, 3, 4, 5, 60, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 2000, 3000, 5000];
   for (var ci = 0; ci < checkpointGens.length; ci++) {
     var target = checkpointGens[ci];
@@ -440,7 +436,7 @@ function runBenchmark(s1, s2, rows, columns, timeLimitS, checkpointCallback) {
     if ((perf.now() - start) >= deadlineMs) break;
   }
 
-  // Phase 2: No more checkpoints — batch generations, check time every 128 gens
+  // Phase 2: No more checkpoints — batch generations
   if (gen >= 5000 && (perf.now() - start) < deadlineMs) {
     while (true) {
       for (var b = 0; b < 128; b++) {
@@ -449,7 +445,6 @@ function runBenchmark(s1, s2, rows, columns, timeLimitS, checkpointCallback) {
       gen = gol.generation;
       if ((perf.now() - start) >= deadlineMs) break;
     }
-    // Final callback at last gen
     lc = gol.getLiveCounts();
     checkpointCallback(gen, lc.liveCells1, lc.liveCells2);
   }
