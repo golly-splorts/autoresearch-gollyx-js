@@ -1,10 +1,7 @@
 /**
  * program.js - Self-contained two-color toroidal Game of Life simulator.
  *
- * This is the ONLY file that the autoresearch agent is allowed to modify.
- * It must expose runBenchmark(s1, s2, rows, columns, timeLimitS, checkpointCallback)
- * that runs the simulation until time expires or the callback aborts, and returns
- * the total number of generations completed.
+ * Hybrid: dense Uint8Array grids for O(1) lookup + live cell list for sparse iteration.
  */
 
 const EQUALTOL = 1e-8;
@@ -14,12 +11,8 @@ function ToroidalGOL(s1, s2, rows, columns) {
   if (typeof s1 === 'string') s1 = JSON.parse(s1);
   if (typeof s2 === 'string') s2 = JSON.parse(s2);
 
-  this.ic1 = s1;
-  this.ic2 = s2;
   this.rows = rows;
   this.columns = columns;
-  this.ruleB = [3];
-  this.ruleS = [2, 3];
   this.maxdim = 280;
   this.running = true;
   this.generation = 0;
@@ -27,15 +20,35 @@ function ToroidalGOL(s1, s2, rows, columns) {
   this.runningAvgLast3 = [0, 0, 0];
   this.foundVictor = false;
   this.whoWon = 0;
-  this.actualState = [];
-  this.actualState1 = [];
-  this.actualState2 = [];
-  this.prepare();
+
+  var size = rows * columns;
+  // Dense grids for O(1) lookup. grid stores color: 0=dead, 1=team1, 2=team2
+  this.color = new Uint8Array(size);
+  // Live cell list as packed integers (y * columns + x)
+  this.liveCells = [];
+
+  // Precompute wrapped coords
+  this.rowUp = new Int32Array(rows);
+  this.rowDown = new Int32Array(rows);
+  this.colLeft = new Int32Array(columns);
+  this.colRight = new Int32Array(columns);
+
+  for (var y = 0; y < rows; y++) {
+    this.rowUp[y] = y === 0 ? rows - 1 : y - 1;
+    this.rowDown[y] = y === rows - 1 ? 0 : y + 1;
+  }
+  for (var x = 0; x < columns; x++) {
+    this.colLeft[x] = x === 0 ? columns - 1 : x - 1;
+    this.colRight[x] = x === columns - 1 ? 0 : x + 1;
+  }
+
+  this._prepare(s1, s2);
 }
 
-ToroidalGOL.prototype.prepare = function () {
-  var s1 = this.ic1;
-  var s2 = this.ic2;
+ToroidalGOL.prototype._prepare = function (s1, s2) {
+  var cols = this.columns;
+  var color = this.color;
+  var liveCells = this.liveCells;
 
   for (var ri = 0; ri < s1.length; ri++) {
     var s1row = s1[ri];
@@ -44,8 +57,9 @@ ToroidalGOL.prototype.prepare = function () {
       var y = parseInt(keys[ki], 10);
       var xs = s1row[keys[ki]];
       for (var xi = 0; xi < xs.length; xi++) {
-        this.actualState = this.addCell(xs[xi], y, this.actualState);
-        this.actualState1 = this.addCell(xs[xi], y, this.actualState1);
+        var idx = y * cols + xs[xi];
+        color[idx] = 1;
+        liveCells.push(idx);
       }
     }
   }
@@ -57,8 +71,9 @@ ToroidalGOL.prototype.prepare = function () {
       var y = parseInt(keys[ki], 10);
       var xs = s2row[keys[ki]];
       for (var xi = 0; xi < xs.length; xi++) {
-        this.actualState = this.addCell(xs[xi], y, this.actualState);
-        this.actualState2 = this.addCell(xs[xi], y, this.actualState2);
+        var idx = y * cols + xs[xi];
+        color[idx] = 2;
+        liveCells.push(idx);
       }
     }
   }
@@ -113,373 +128,150 @@ ToroidalGOL.prototype.approxEqual = function (a, b, tol) {
   return (Math.abs(a - b) / denom) < tol;
 };
 
-ToroidalGOL.prototype.isAlive = function (x, y) {
-  x = ((x % this.columns) + this.columns) % this.columns;
-  y = ((y % this.rows) + this.rows) % this.rows;
-
-  for (var i = 0; i < this.actualState.length; i++) {
-    if (this.actualState[i][0] === y) {
-      for (var j = 1; j < this.actualState[i].length; j++) {
-        if (this.actualState[i][j] === x) return true;
-      }
-    }
-  }
-  return false;
-};
-
-ToroidalGOL.prototype.getCellColor = function (x, y) {
-  x = ((x % this.columns) + this.columns) % this.columns;
-  y = ((y % this.rows) + this.rows) % this.rows;
-
-  for (var i = 0; i < this.actualState1.length; i++) {
-    if (this.actualState1[i][0] === y) {
-      for (var j = 1; j < this.actualState1[i].length; j++) {
-        if (this.actualState1[i][j] === x) return 1;
-      }
-    } else if (this.actualState1[i][0] > y) {
-      break;
-    }
-  }
-
-  for (var i = 0; i < this.actualState2.length; i++) {
-    if (this.actualState2[i][0] === y) {
-      for (var j = 1; j < this.actualState2[i].length; j++) {
-        if (this.actualState2[i][j] === x) return 2;
-      }
-    } else if (this.actualState2[i][0] > y) {
-      break;
-    }
-  }
-  return 0;
-};
-
-ToroidalGOL.prototype.removeCell = function (x, y, state) {
-  x = ((x % this.columns) + this.columns) % this.columns;
-  y = ((y % this.rows) + this.rows) % this.rows;
-
-  for (var i = 0; i < state.length; i++) {
-    if (state[i][0] === y) {
-      if (state[i].length === 2) {
-        state.splice(i, 1);
-        return;
-      } else {
-        for (var j = 1; j < state[i].length; j++) {
-          if (state[i][j] === x) {
-            state[i].splice(j, 1);
-            return;
-          }
-        }
-      }
-    }
-  }
-};
-
-ToroidalGOL.prototype.addCell = function (x, y, state) {
-  x = ((x % this.columns) + this.columns) % this.columns;
-  y = ((y % this.rows) + this.rows) % this.rows;
-
-  if (state.length === 0) {
-    return [[y, x]];
-  }
-
-  if (y < state[0][0]) {
-    return [[y, x]].concat(state);
-  } else if (y > state[state.length - 1][0]) {
-    state.push([y, x]);
-    return state;
-  } else {
-    var newState = [];
-    var added = false;
-    for (var n = 0; n < state.length; n++) {
-      if (!added && state[n][0] === y) {
-        var tempRow = [y];
-        for (var m = 1; m < state[n].length; m++) {
-          if (!added && x < state[n][m]) {
-            tempRow.push(x);
-            added = true;
-          }
-          tempRow.push(state[n][m]);
-        }
-        if (!added) {
-          tempRow.push(x);
-          added = true;
-        }
-        newState.push(tempRow);
-      } else if (!added && y < state[n][0]) {
-        newState.push([y, x]);
-        added = true;
-        newState.push(state[n]);
-      } else {
-        newState.push(state[n]);
-      }
-    }
-    return newState;
-  }
-};
-
-ToroidalGOL.prototype.getNeighborsFromAlive = function (x, y, i, state, possibleNeighborsList) {
-  var neighbors = 0;
-  var neighbors1 = 0;
-  var neighbors2 = 0;
-  var cols = this.columns;
-  var rows = this.rows;
-
-  x = ((x % cols) + cols) % cols;
-  y = ((y % rows) + rows) % rows;
-  var xm1 = ((x - 1) + cols) % cols;
-  var ym1 = ((y - 1) + rows) % rows;
-  var xp1 = (x + 1) % cols;
-  var yp1 = (y + 1) % rows;
-
-  var im1 = i - 1;
-  if (im1 < 0) im1 = state.length - 1;
-  if (im1 < state.length) {
-    if (state[im1][0] === ym1) {
-      for (var k = 1; k < state[im1].length; k++) {
-        if (state[im1][k] === xm1) {
-          possibleNeighborsList[0] = null;
-          neighbors++;
-          var nc = this.getCellColor(state[im1][k], state[im1][0]);
-          if (nc === 1) neighbors1++;
-          else if (nc === 2) neighbors2++;
-        }
-        if (state[im1][k] === x) {
-          possibleNeighborsList[1] = null;
-          neighbors++;
-          var nc = this.getCellColor(state[im1][k], state[im1][0]);
-          if (nc === 1) neighbors1++;
-          else if (nc === 2) neighbors2++;
-        }
-        if (state[im1][k] === xp1) {
-          possibleNeighborsList[2] = null;
-          neighbors++;
-          var nc = this.getCellColor(state[im1][k], state[im1][0]);
-          if (nc === 1) neighbors1++;
-          else if (nc === 2) neighbors2++;
-        }
-      }
-    }
-  }
-
-  for (var k = 1; k < state[i].length; k++) {
-    if (state[i][k] === xm1) {
-      possibleNeighborsList[3] = null;
-      neighbors++;
-      var nc = this.getCellColor(state[i][k], state[i][0]);
-      if (nc === 1) neighbors1++;
-      else if (nc === 2) neighbors2++;
-    }
-    if (state[i][k] === xp1) {
-      possibleNeighborsList[4] = null;
-      neighbors++;
-      var nc = this.getCellColor(state[i][k], state[i][0]);
-      if (nc === 1) neighbors1++;
-      else if (nc === 2) neighbors2++;
-    }
-  }
-
-  var ip1 = i + 1;
-  if (ip1 >= state.length) ip1 = 0;
-  if (ip1 < state.length) {
-    if (state[ip1][0] === yp1) {
-      for (var k = 1; k < state[ip1].length; k++) {
-        if (state[ip1][k] === xm1) {
-          possibleNeighborsList[5] = null;
-          neighbors++;
-          var nc = this.getCellColor(state[ip1][k], state[ip1][0]);
-          if (nc === 1) neighbors1++;
-          else if (nc === 2) neighbors2++;
-        }
-        if (state[ip1][k] === x) {
-          possibleNeighborsList[6] = null;
-          neighbors++;
-          var nc = this.getCellColor(state[ip1][k], state[ip1][0]);
-          if (nc === 1) neighbors1++;
-          else if (nc === 2) neighbors2++;
-        }
-        if (state[ip1][k] === xp1) {
-          possibleNeighborsList[7] = null;
-          neighbors++;
-          var nc = this.getCellColor(state[ip1][k], state[ip1][0]);
-          if (nc === 1) neighbors1++;
-          else if (nc === 2) neighbors2++;
-        }
-      }
-    }
-  }
-
-  var color = 0;
-  if (neighbors1 > neighbors2) {
-    color = 1;
-  } else if (neighbors2 > neighbors1) {
-    color = 2;
-  } else if (x % 2 === y % 2) {
-    color = 1;
-  } else {
-    color = 2;
-  }
-  return { neighbors: neighbors, color: color };
-};
-
-ToroidalGOL.prototype.getColorFromAlive = function (x, y) {
-  var state1 = this.actualState1;
-  var state2 = this.actualState2;
-  var color1 = 0;
-  var color2 = 0;
-  var cols = this.columns;
-  var rows = this.rows;
-
-  x = ((x % cols) + cols) % cols;
-  y = ((y % rows) + rows) % rows;
-  var xm1 = ((x - 1) + cols) % cols;
-  var ym1 = ((y - 1) + rows) % rows;
-  var xp1 = (x + 1) % cols;
-  var yp1 = (y + 1) % rows;
-
-  for (var i = 0; i < state1.length; i++) {
-    var yy = state1[i][0];
-    if (yy === ym1) {
-      for (var j = 1; j < state1[i].length; j++) {
-        var xx = state1[i][j];
-        if (xx === xm1 || xx === x || xx === xp1) color1++;
-      }
-    } else if (yy === y) {
-      for (var j = 1; j < state1[i].length; j++) {
-        var xx = state1[i][j];
-        if (xx === xm1 || xx === xp1) color1++;
-      }
-    } else if (yy === yp1) {
-      for (var j = 1; j < state1[i].length; j++) {
-        var xx = state1[i][j];
-        if (xx === xm1 || xx === x || xx === xp1) color1++;
-      }
-    }
-  }
-
-  for (var i = 0; i < state2.length; i++) {
-    var yy = state2[i][0];
-    if (yy === ym1) {
-      for (var j = 1; j < state2[i].length; j++) {
-        var xx = state2[i][j];
-        if (xx === xm1 || xx === x || xx === xp1) color2++;
-      }
-    } else if (yy === y) {
-      for (var j = 1; j < state2[i].length; j++) {
-        var xx = state2[i][j];
-        if (xx === xm1 || xx === xp1) color2++;
-      }
-    } else if (yy === yp1) {
-      for (var j = 1; j < state2[i].length; j++) {
-        var xx = state2[i][j];
-        if (xx === xm1 || xx === x || xx === xp1) color2++;
-      }
-    }
-  }
-
-  if (color1 > color2) return 1;
-  if (color1 < color2) return 2;
-  if (x % 2 === y % 2) return 1;
-  return 2;
-};
-
 ToroidalGOL.prototype._nextGenerationLogic = function () {
-  var allDeadNeighbors = {};
-  var newState = [];
-  var newState1 = [];
-  var newState2 = [];
+  var rows = this.rows;
+  var cols = this.columns;
+  var color = this.color;
+  var liveCells = this.liveCells;
+  var rowUp = this.rowUp;
+  var rowDown = this.rowDown;
+  var colLeft = this.colLeft;
+  var colRight = this.colRight;
 
-  for (var i = 0; i < this.actualState.length; i++) {
-    for (var j = 1; j < this.actualState[i].length; j++) {
-      var x = this.actualState[i][j];
-      var y = this.actualState[i][0];
-      var cols = this.columns;
-      var rows = this.rows;
+  // Use Int32Array as a neighbor count map. We track which cells to check.
+  // For each live cell, increment neighbor counts for all 8 neighbors.
+  var size = rows * cols;
+  var neighborCount = new Int32Array(size);
+  // Track team1 neighbor counts for color determination
+  var neighbor1Count = new Int32Array(size);
 
-      x = ((x % cols) + cols) % cols;
-      y = ((y % rows) + rows) % rows;
-      var xm1 = ((x - 1) + cols) % cols;
-      var ym1 = ((y - 1) + rows) % rows;
-      var xp1 = (x + 1) % cols;
-      var yp1 = (y + 1) % rows;
+  // For each live cell, add to neighbor counts of surrounding cells
+  for (var li = 0; li < liveCells.length; li++) {
+    var idx = liveCells[li];
+    var y = (idx / cols) | 0;
+    var x = idx - y * cols;
+    var ym1 = rowUp[y];
+    var yp1 = rowDown[y];
+    var xm1 = colLeft[x];
+    var xp1 = colRight[x];
 
-      var deadNeighbors = [
-        [xm1, ym1, 1], [x, ym1, 1], [xp1, ym1, 1],
-        [xm1, y, 1],                [xp1, y, 1],
-        [xm1, yp1, 1], [x, yp1, 1], [xp1, yp1, 1],
-      ];
+    var ym1Off = ym1 * cols;
+    var yOff = y * cols;
+    var yp1Off = yp1 * cols;
 
-      var result = this.getNeighborsFromAlive(x, y, i, this.actualState, deadNeighbors);
-      var neighbors = result.neighbors;
-      var color = result.color;
+    neighborCount[ym1Off + xm1]++;
+    neighborCount[ym1Off + x]++;
+    neighborCount[ym1Off + xp1]++;
+    neighborCount[yOff + xm1]++;
+    neighborCount[yOff + xp1]++;
+    neighborCount[yp1Off + xm1]++;
+    neighborCount[yp1Off + x]++;
+    neighborCount[yp1Off + xp1]++;
 
-      for (var m = 0; m < 8; m++) {
-        if (deadNeighbors[m] !== null) {
-          var xx = deadNeighbors[m][0];
-          var yy = deadNeighbors[m][1];
-          var key = xx + ',' + yy;
-          if (allDeadNeighbors[key] === undefined) {
-            allDeadNeighbors[key] = 1;
+    if (color[idx] === 1) {
+      neighbor1Count[ym1Off + xm1]++;
+      neighbor1Count[ym1Off + x]++;
+      neighbor1Count[ym1Off + xp1]++;
+      neighbor1Count[yOff + xm1]++;
+      neighbor1Count[yOff + xp1]++;
+      neighbor1Count[yp1Off + xm1]++;
+      neighbor1Count[yp1Off + x]++;
+      neighbor1Count[yp1Off + xp1]++;
+    }
+  }
+
+  // Now determine new state. We need to check:
+  // 1. All currently live cells (survival: n=2 or n=3)
+  // 2. All dead cells with exactly 3 neighbors (birth)
+  // To find candidate dead cells efficiently, iterate live cells' neighbors
+  var newColor = new Uint8Array(size);
+  var newLiveCells = [];
+
+  // Use a marker to avoid processing the same dead cell twice
+  var checked = new Uint8Array(size);
+
+  for (var li = 0; li < liveCells.length; li++) {
+    var idx = liveCells[li];
+    var n = neighborCount[idx];
+
+    // Survival
+    if (n === 2 || n === 3) {
+      var n1 = neighbor1Count[idx];
+      var n2 = n - n1;
+      var y = (idx / cols) | 0;
+      var x = idx - y * cols;
+      if (n1 > n2) {
+        newColor[idx] = 1;
+      } else if (n2 > n1) {
+        newColor[idx] = 2;
+      } else if (x % 2 === y % 2) {
+        newColor[idx] = 1;
+      } else {
+        newColor[idx] = 2;
+      }
+      newLiveCells.push(idx);
+    }
+
+    // Check dead neighbors for birth
+    var y = (idx / cols) | 0;
+    var x = idx - y * cols;
+    var ym1 = rowUp[y];
+    var yp1 = rowDown[y];
+    var xm1 = colLeft[x];
+    var xp1 = colRight[x];
+
+    var ym1Off = ym1 * cols;
+    var yOff = y * cols;
+    var yp1Off = yp1 * cols;
+
+    var neighbors8 = [
+      ym1Off + xm1, ym1Off + x, ym1Off + xp1,
+      yOff + xm1, yOff + xp1,
+      yp1Off + xm1, yp1Off + x, yp1Off + xp1
+    ];
+
+    for (var ni = 0; ni < 8; ni++) {
+      var nIdx = neighbors8[ni];
+      if (color[nIdx] === 0 && !checked[nIdx]) {
+        checked[nIdx] = 1;
+        if (neighborCount[nIdx] === 3) {
+          var nn1 = neighbor1Count[nIdx];
+          var nn2 = 3 - nn1;
+          var ny = (nIdx / cols) | 0;
+          var nx = nIdx - ny * cols;
+          if (nn1 > nn2) {
+            newColor[nIdx] = 1;
+          } else if (nn2 > nn1) {
+            newColor[nIdx] = 2;
+          } else if (nx % 2 === ny % 2) {
+            newColor[nIdx] = 1;
           } else {
-            allDeadNeighbors[key]++;
+            newColor[nIdx] = 2;
           }
-        }
-      }
-
-      if (neighbors === 2 || neighbors === 3) {
-        newState = this.addCell(x, y, newState);
-        if (color === 1) {
-          newState1 = this.addCell(x, y, newState1);
-        } else if (color === 2) {
-          newState2 = this.addCell(x, y, newState2);
+          newLiveCells.push(nIdx);
         }
       }
     }
   }
 
-  var keys = Object.keys(allDeadNeighbors);
-  for (var ki = 0; ki < keys.length; ki++) {
-    var key = keys[ki];
-    if (allDeadNeighbors[key] === 3) {
-      var parts = key.split(',');
-      var t1 = parseInt(parts[0], 10);
-      var t2 = parseInt(parts[1], 10);
-      var color = this.getColorFromAlive(t1, t2);
-      newState = this.addCell(t1, t2, newState);
-      if (color === 1) {
-        newState1 = this.addCell(t1, t2, newState1);
-      } else if (color === 2) {
-        newState2 = this.addCell(t1, t2, newState2);
-      }
-    }
-  }
-
-  this.actualState = newState;
-  this.actualState1 = newState1;
-  this.actualState2 = newState2;
+  this.color = newColor;
+  this.liveCells = newLiveCells;
   return this.getLiveCounts();
 };
 
 ToroidalGOL.prototype.getLiveCounts = function () {
   var rows = this.rows;
   var cols = this.columns;
+  var color = this.color;
+  var liveCells = this.liveCells;
 
-  function countLiveCells(state) {
-    var livecells = 0;
-    for (var i = 0; i < state.length; i++) {
-      if (state[i][0] >= 0 && state[i][0] < rows) {
-        for (var j = 1; j < state[i].length; j++) {
-          if (state[i][j] >= 0 && state[i][j] < cols) {
-            livecells++;
-          }
-        }
-      }
-    }
-    return livecells;
+  var livecells1 = 0;
+  var livecells2 = 0;
+  for (var i = 0; i < liveCells.length; i++) {
+    if (color[liveCells[i]] === 1) livecells1++;
+    else livecells2++;
   }
-
-  var livecells = countLiveCells(this.actualState);
-  var livecells1 = countLiveCells(this.actualState1);
-  var livecells2 = countLiveCells(this.actualState2);
+  var livecells = livecells1 + livecells2;
 
   this.livecells = livecells;
   this.livecells1 = livecells1;
